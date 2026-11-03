@@ -187,6 +187,7 @@ def _request_dict(r: RequestLogRow) -> dict:
 
 
 def _agent_dict(r: AgentRunRow) -> dict:
+    artifact = r.artifact_json or {}
     return {
         "id": r.id,
         "activation_id": r.activation_id,
@@ -201,6 +202,12 @@ def _agent_dict(r: AgentRunRow) -> dict:
         "fallback_reason": r.fallback_reason,
         "provider": r.provider,
         "model": r.model,
+        "confidence": artifact.get("confidence"),
+        "margin": artifact.get("margin"),
+        "provider_latency_ms": artifact.get("provider_latency_ms"),
+        "shadow": bool(artifact.get("shadow")),
+        "shadow_agreement": artifact.get("agreement"),
+        "jev_option_id": artifact.get("jev_option_id"),
         "offered_option_count": r.offered_option_count,
         "issued_state_version": r.issued_state_version,
         "committed_state_version": r.committed_state_version,

@@ -692,7 +692,8 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
   border-top: 1px solid var(--line);
   padding-top: 0.35rem;
 }
-.diag-panel { max-height: 120px; overflow: auto; }
+.diag-panel { max-height: 220px; overflow: auto; }
+.diag-run { font-size: 0.75rem; line-height: 1.35; }
 button.ghost {
   background: transparent;
   border-color: var(--line);

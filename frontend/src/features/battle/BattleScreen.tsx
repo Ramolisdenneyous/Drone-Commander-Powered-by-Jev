@@ -1397,6 +1397,19 @@ export function BattleScreen({ battle, boot, onUpdate, onError }: Props) {
                 requests {diag.stats?.request_count} · events {diag.stats?.event_count} · agent runs{" "}
                 {diag.stats?.agent_run_count} · fallbacks {diag.stats?.fallback_count}
               </div>
+              <div className="diag-runs">
+                {(diag.agent_runs || diag.recent_agent_runs || []).slice(-6).reverse().map((run: any) => (
+                  <div key={run.id} className="muted diag-run">
+                    {run.definition_id} · {run.status} · {run.provider || "none"}
+                    {run.model ? `/${run.model}` : ""}
+                    {run.confidence != null ? ` · conf ${Number(run.confidence).toFixed(2)}` : ""}
+                    {run.margin != null ? ` · margin ${Number(run.margin).toFixed(2)}` : ""}
+                    {run.provider_latency_ms != null ? ` · ${Math.round(run.provider_latency_ms)} ms` : ""}
+                    {run.shadow ? ` · shadow ${run.shadow_agreement ? "agree" : "differ"}` : ""}
+                    {run.fallback_reason ? ` · ${String(run.fallback_reason).slice(0, 80)}` : ""}
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </div>

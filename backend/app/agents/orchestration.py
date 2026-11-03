@@ -148,7 +148,7 @@ def run_agent_activation(battle: BattleState, db: Session | None = None) -> list
     )
 
     try:
-        if settings.llm_external_enabled and settings.openai_api_key:
+        if llm.tactical_provider_ready():
             kill_opts = [
                 o
                 for o in options.values()
@@ -518,27 +518,64 @@ def run_agent_activation(battle: BattleState, db: Session | None = None) -> list
                 offered_option_ids=offered_for_tool,
             )
             llm_duration = llm_timer.ms()
-            selected = result["option_id"]
-            artifact = result.get("raw", {})
+            artifact = dict(result.get("raw") or {})
+            artifact["provider_latency_ms"] = llm_duration
             token_usage = artifact.get("usage") or {}
-            response_hash = hash_payload({"option_id": selected, "fallback_policy": result.get("fallback_policy")})
-            provider_name = "openai"
-            model_name = settings.llm_model_tactical
+            provider_name = artifact.get("provider", "openai")
+            model_name = artifact.get("model", settings.llm_model_tactical)
             llm_success = True
-            battle.append_events(
-                [
-                    DomainEvent(
-                        type="agent_choice_received",
-                        actor_id=unit.unit_instance_id,
-                        payload={
-                            "option_id": selected,
-                            "provider": provider_name,
-                            "model": model_name,
-                            "trace_id": trace_id_var.get(),
-                        },
-                    )
-                ]
-            )
+            if llm.tactical_shadow_enabled():
+                jev_option_id = result["option_id"]
+                selected = fallback_select(options, unit, battle)
+                artifact.update(
+                    {
+                        "shadow": True,
+                        "jev_option_id": jev_option_id,
+                        "agreement": selected == jev_option_id,
+                    }
+                )
+                provider_name = "shadow"
+                run_status = "SHADOW"
+                response_hash = hash_payload(
+                    {"jev_option_id": jev_option_id, "committed_option_id": selected}
+                )
+                battle.append_events(
+                    [
+                        DomainEvent(
+                            type="agent_shadow_observed",
+                            actor_id=unit.unit_instance_id,
+                            payload={
+                                "jev_option_id": jev_option_id,
+                                "committed_option_id": selected,
+                                "agreement": selected == jev_option_id,
+                                "confidence": artifact.get("confidence"),
+                                "margin": artifact.get("margin"),
+                                "provider_latency_ms": llm_duration,
+                                "model": model_name,
+                                "trace_id": trace_id_var.get(),
+                            },
+                        )
+                    ]
+                )
+            else:
+                selected = result["option_id"]
+                response_hash = hash_payload(
+                    {"option_id": selected, "fallback_policy": result.get("fallback_policy")}
+                )
+                battle.append_events(
+                    [
+                        DomainEvent(
+                            type="agent_choice_received",
+                            actor_id=unit.unit_instance_id,
+                            payload={
+                                "option_id": selected,
+                                "provider": provider_name,
+                                "model": model_name,
+                                "trace_id": trace_id_var.get(),
+                            },
+                        )
+                    ]
+                )
         else:
             raise llm.ProviderError("disabled")
     except Exception as exc:
@@ -570,6 +607,19 @@ def run_agent_activation(battle: BattleState, db: Session | None = None) -> list
         fallback_used = True
         fallback_reason = (fallback_reason or "") + "; stale_option_rebuilt"
         run_status = "FALLBACK"
+        battle.append_events(
+            [
+                DomainEvent(
+                    type="agent_fallback_used",
+                    actor_id=unit.unit_instance_id,
+                    payload={
+                        "reason": fallback_reason,
+                        "option_id": selected,
+                        "trace_id": trace_id_var.get(),
+                    },
+                )
+            ]
+        )
 
     subroutine = options.get(selected, {}).get("subroutine")
     try:
@@ -728,6 +778,7 @@ def run_agent_activation(battle: BattleState, db: Session | None = None) -> list
             facts = {"subroutine": subroutine or "action", "fallback": fallback_used}
             try:
                 radio_timer = Timer()
+                radio_provider = llm.radio_provider_name()
                 radio_text = llm.generate_radio_line(facts=facts, unit_name=unit.display_name)
                 if db is not None:
                     db.add(
@@ -735,8 +786,8 @@ def run_agent_activation(battle: BattleState, db: Session | None = None) -> list
                             session_id=battle.session_id,
                             battle_id=battle.battle_id,
                             purpose="radio",
-                            provider="openai" if settings.llm_external_enabled else "template",
-                            model=settings.llm_model_radio,
+                            provider=radio_provider,
+                            model=settings.llm_model_radio if radio_provider == "openai" else "template",
                             prompt_hash=hash_payload(facts),
                             response_hash=hash_payload(radio_text),
                             summary_json={"text_preview": redact_text(radio_text, 80), "duration_ms": radio_timer.ms()},
@@ -795,6 +846,12 @@ def run_agent_activation(battle: BattleState, db: Session | None = None) -> list
                 "usage": token_usage,
                 "radio_preview": redact_text(radio_text or "", 60),
                 "chained_dash": chained_dash,
+                "confidence": artifact.get("confidence"),
+                "margin": artifact.get("margin"),
+                "provider_latency_ms": artifact.get("provider_latency_ms"),
+                "shadow": bool(artifact.get("shadow")),
+                "jev_option_id": artifact.get("jev_option_id"),
+                "agreement": artifact.get("agreement"),
             },
         )
         db.add(run)
@@ -805,6 +862,11 @@ def run_agent_activation(battle: BattleState, db: Session | None = None) -> list
                 "selected_option_id": selected,
                 "selected_subroutine": subroutine,
                 "reason_preview": redact_text(fallback_reason or "", 120),
+                "confidence": artifact.get("confidence"),
+                "margin": artifact.get("margin"),
+                "provider_latency_ms": artifact.get("provider_latency_ms"),
+                "shadow": bool(artifact.get("shadow")),
+                "agreement": artifact.get("agreement"),
             }
             if settings.artifact_retention_mode == "full_diagnostic" and prompt_payload is not None:
                 summary["prompt_preview"] = prompt_payload

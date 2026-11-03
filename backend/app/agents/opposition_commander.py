@@ -589,7 +589,7 @@ def _select_one(
         "llm_success": False,
         "llm_duration": 0.0,
     }
-    if use_llm and enabled_ids and settings.llm_external_enabled and settings.openai_api_key:
+    if use_llm and enabled_ids and llm.tactical_provider_ready():
         try:
             offered_menu = [
                 {
@@ -643,15 +643,25 @@ def _select_one(
                 offered_option_ids=enabled_ids,
             )
             meta["llm_duration"] = llm_timer.ms()
-            meta["provider"] = "openai"
-            meta["model"] = result.get("raw", {}).get("model", settings.llm_model_tactical)
-            meta["token_usage"] = result.get("raw", {}).get("usage") or {}
+            raw = result.get("raw") or {}
+            meta["provider"] = raw.get("provider", "openai")
+            meta["model"] = raw.get("model", settings.llm_model_tactical)
+            meta["token_usage"] = raw.get("usage") or {}
+            meta["confidence"] = raw.get("confidence")
+            meta["margin"] = raw.get("margin")
             meta["response_hash"] = hash_payload(result)
             meta["llm_success"] = True
             selected = result["option_id"]
-            if selected in enabled_ids:
-                return selected, meta
-            raise llm.ProviderError(f"disabled_or_unknown option {selected}")
+            if selected not in enabled_ids:
+                raise llm.ProviderError(f"disabled_or_unknown option {selected}")
+            if llm.tactical_shadow_enabled():
+                committed = commander_fallback_select(options, battle, unit)
+                meta["shadow"] = True
+                meta["jev_option_id"] = selected
+                meta["agreement"] = committed == selected
+                meta["provider"] = "shadow"
+                return committed, meta
+            return selected, meta
         except Exception as exc:
             meta["fallback_used"] = True
             meta["fallback_reason"] = str(exc)[:500]
@@ -690,6 +700,11 @@ def run_opposition_commander_activation(battle: BattleState, db: Session | None 
     moved_this_activation = False
     fallback_used = False
     fallback_reason: str | None = None
+    shadow_observed = False
+    confidence = None
+    margin = None
+    jev_option_id = None
+    agreement = None
     provider_name = "fallback"
     model_name = "deterministic"
     prompt_payload: dict | None = None
@@ -767,6 +782,47 @@ def run_opposition_commander_activation(battle: BattleState, db: Session | None 
                 llm_success = bool(meta.get("llm_success"))
                 llm_duration = float(meta.get("llm_duration") or 0)
                 llm_error = meta.get("llm_error")
+            if meta.get("shadow"):
+                shadow_observed = True
+                confidence = meta.get("confidence")
+                margin = meta.get("margin")
+                jev_option_id = meta.get("jev_option_id")
+                agreement = meta.get("agreement")
+                battle.append_events(
+                    [
+                        DomainEvent(
+                            type="agent_shadow_observed",
+                            actor_id=unit.unit_instance_id,
+                            payload={
+                                "jev_option_id": jev_option_id,
+                                "committed_option_id": selected,
+                                "agreement": agreement,
+                                "confidence": confidence,
+                                "margin": margin,
+                                "provider_latency_ms": meta.get("llm_duration"),
+                                "model": meta.get("model"),
+                                "agent": "opposition_commander",
+                            },
+                        )
+                    ]
+                )
+            elif meta.get("llm_success"):
+                confidence = meta.get("confidence", confidence)
+                margin = meta.get("margin", margin)
+                battle.append_events(
+                    [
+                        DomainEvent(
+                            type="agent_choice_received",
+                            actor_id=unit.unit_instance_id,
+                            payload={
+                                "option_id": selected,
+                                "provider": meta.get("provider"),
+                                "model": meta.get("model"),
+                                "agent": "opposition_commander",
+                            },
+                        )
+                    ]
+                )
             if meta.get("fallback_used"):
                 fallback_used = True
                 fallback_reason = (fallback_reason or "") + f";{meta.get('fallback_reason')}"
@@ -857,7 +913,7 @@ def run_opposition_commander_activation(battle: BattleState, db: Session | None 
         end_activation(battle)
 
     duration = timer.ms()
-    run_status = "FALLBACK" if fallback_used else "COMMITTED"
+    run_status = "FALLBACK" if fallback_used else ("SHADOW" if shadow_observed else "COMMITTED")
     if db is not None:
         run = AgentRunRow(
             session_id=battle.session_id,
@@ -879,7 +935,16 @@ def run_opposition_commander_activation(battle: BattleState, db: Session | None 
             committed_state_version=battle.state_version,
             duration_ms=duration,
             trace_id=trace_id_var.get(),
-            artifact_json={"agent": "opposition_commander", "actions_taken": actions_taken},
+            artifact_json={
+                "agent": "opposition_commander",
+                "actions_taken": actions_taken,
+                "confidence": confidence,
+                "margin": margin,
+                "provider_latency_ms": llm_duration or None,
+                "shadow": shadow_observed,
+                "jev_option_id": jev_option_id,
+                "agreement": agreement,
+            },
         )
         db.add(run)
         db.flush()
@@ -899,6 +964,12 @@ def run_opposition_commander_activation(battle: BattleState, db: Session | None 
                         "selected_option_id": last_selected,
                         "subroutine": last_subroutine,
                         "actions_taken": actions_taken,
+                        "confidence": confidence,
+                        "margin": margin,
+                        "provider_latency_ms": llm_duration or None,
+                        "shadow": shadow_observed,
+                        "agreement": agreement,
+                        "fallback_reason": redact_text(fallback_reason or "", 120),
                     },
                     success=llm_success,
                     error=llm_error,

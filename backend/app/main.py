@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from .agents import provider as llm
 from .application import diagnostics as diag
 from .application import services as app_services
 from .config import settings
@@ -39,10 +40,15 @@ def on_startup() -> None:
     Base.metadata.create_all(bind=engine)
     ensure_schema()
     load_catalog(force=True)
+    jev_models = llm.refresh_jev_model_catalog()
     structured_log(
         "backend_started",
         content_version=settings.content_version,
         llm_external_enabled=settings.llm_external_enabled,
+        tactical_provider=settings.tactical_provider,
+        tactical_shadow=settings.tactical_shadow,
+        radio_provider=llm.radio_provider_name(),
+        jev_models=jev_models.get("models") or [],
         llm_model_tactical=settings.llm_model_tactical,
         log_level=settings.log_level,
         artifact_retention_mode=settings.artifact_retention_mode,
@@ -64,6 +70,16 @@ def health(request: Request):
         "service": "drone-commander",
         "content_version": catalog.content_version,
         "llm_external_enabled": settings.llm_external_enabled,
+        "tactical_provider": settings.tactical_provider,
+        "tactical_provider_configured": (
+            bool(settings.typesafe_api_key)
+            if settings.tactical_provider.strip().lower() == "jev"
+            else bool(settings.openai_api_key)
+        ),
+        "tactical_shadow": settings.tactical_shadow,
+        "radio_provider": llm.radio_provider_name(),
+        "typesafe_model": settings.typesafe_model if settings.tactical_provider.strip().lower() == "jev" else None,
+        "jev_models": llm.discovered_jev_models().get("models") or [],
         "llm_model_tactical": settings.llm_model_tactical,
         "observability": {
             "structured_logs": True,

@@ -21,6 +21,20 @@ class Settings(BaseSettings):
     llm_model_radio: str = "gpt-5.6-luna"
     llm_decision_timeout_sec: float = 20.0
     llm_radio_timeout_sec: float = 8.0
+    # Tactical decisions may use OpenAI tool calls or TypeSafe Jev's typed choice API.
+    # Radio remains a separate generative concern.
+    tactical_provider: str = "openai"
+    typesafe_api_key: str = ""
+    typesafe_base_url: str = "https://api.typesafe.ai"
+    typesafe_model: str = "jev-latest"
+    jev_decision_timeout_sec: float = 3.0
+    jev_min_confidence: float = 0.60
+    jev_min_margin: float = 0.10
+    # auto: template while Jev owns tactics, OpenAI while Luna owns tactics.
+    # template and openai are explicit overrides.
+    radio_provider: str = "auto"
+    # Shadow asks Jev for a choice and logs it, then commits the deterministic fallback.
+    tactical_shadow: bool = False
     log_level: str = "INFO"
     # metadata = hashes/summaries only; full_diagnostic = include truncated prompt/response text
     artifact_retention_mode: str = "metadata"
